@@ -1,0 +1,637 @@
+ARGS
+<!(--bams)bams>
+<!(--annotation)annotation>
+<!(--outdir/-o)outdir>
+<(--threads/-t)threads>
+  1
+<(--strand)strand>
+  0
+<(--feature-type)feature-type>
+  exon
+<(--attribute)attribute>
+  gene_id
+<(--min-mapq)min-mapq>
+  0
+<(--min-assigned-reads)min-assigned-reads>
+  0
+
+RUN
+<taffish>
+set -eu
+
+FLOW_NAME="rnaseq-count-flow"
+FLOW_VERSION="0.1.0-r1"
+
+bams_arg="::!(--bams)bams::"
+annotation_arg="::!(--annotation)annotation::"
+outdir_arg="::!(--outdir/-o)outdir::"
+threads="::threads::"
+strand="::strand::"
+feature_type="::feature-type::"
+attribute="::attribute::"
+min_mapq="::min-mapq::"
+min_assigned_reads="::min-assigned-reads::"
+paired_arg="::(--paired)paired?::"
+force_arg="::(--force)force?::"
+
+export bam threads strand feature_type attribute paired_args mapq_args
+export featurecounts_tmp_dir featurecounts_annotation featurecounts_out bam_args outdir reports_dir
+export featurecounts_script
+
+flow_log=""
+
+log() {
+    printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$FLOW_NAME" "$*" >&2
+    if [ -n "$flow_log" ]; then
+        printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$FLOW_NAME" "$*" >> "$flow_log"
+    fi
+}
+
+fail() {
+    log "ERROR: $*"
+    exit 1
+}
+
+sq() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+json_string() {
+    printf '%s' "$1" | awk '
+        BEGIN {
+            ORS = ""
+            bs = sprintf("%c", 92)
+            dq = sprintf("%c", 34)
+            tabc = sprintf("%c", 9)
+            cr = sprintf("%c", 13)
+            printf dq
+        }
+        {
+            for (i = 1; i <= length($0); i++) {
+                c = substr($0, i, 1)
+                if (c == bs) {
+                    printf "%s%s", bs, bs
+                } else if (c == dq) {
+                    printf "%s%s", bs, dq
+                } else if (c == tabc) {
+                    printf "%st", bs
+                } else if (c == cr) {
+                    printf "%sr", bs
+                } else {
+                    printf "%s", c
+                }
+            }
+        }
+        END {
+            printf dq
+        }
+    '
+}
+
+resolve_path() {
+    path_value=$1
+    base_dir=$2
+    case "$path_value" in
+        /*) printf '%s\n' "$path_value" ;;
+        *) printf '%s/%s\n' "$base_dir" "$path_value" ;;
+    esac
+}
+
+is_true() {
+    case "$1" in
+        T|t|true|TRUE|True|1|yes|YES|Yes) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_positive_integer() {
+    awk -v x="$1" 'BEGIN { exit !(x ~ /^[1-9][0-9]*$/) }'
+}
+
+is_nonnegative_integer() {
+    awk -v x="$1" 'BEGIN { exit !(x ~ /^[0-9]+$/) }'
+}
+
+valid_sample_id() {
+    case "$1" in
+        ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+record_command() {
+    step_name=$1
+    cmd=$2
+    printf '\n# [%s]\n%s\n' "$step_name" "$cmd" >> "$commands_file"
+}
+
+for core_cmd in awk cat chmod cp date dirname grep mkdir rm sed sh sort wc; do
+    command -v "$core_cmd" >/dev/null 2>&1 || fail "missing required shell utility: $core_cmd"
+done
+
+case "$strand" in
+    0|1|2) : ;;
+    *) fail "--strand must be one of: 0, 1, 2" ;;
+esac
+
+case "$feature_type" in
+    '') fail "--feature-type cannot be empty" ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-]*) fail "--feature-type contains unsupported characters: $feature_type" ;;
+esac
+
+case "$attribute" in
+    '') fail "--attribute cannot be empty" ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-]*) fail "--attribute contains unsupported characters: $attribute" ;;
+esac
+
+is_positive_integer "$threads" || fail "--threads must be a positive integer: $threads"
+is_nonnegative_integer "$min_mapq" || fail "--min-mapq must be a non-negative integer: $min_mapq"
+is_nonnegative_integer "$min_assigned_reads" || fail "--min-assigned-reads must be a non-negative integer: $min_assigned_reads"
+
+paired_flag=false
+is_true "$paired_arg" && paired_flag=true
+
+start_cwd=$(pwd)
+started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+bams_path=$(resolve_path "$bams_arg" "$start_cwd")
+annotation_path=$(resolve_path "$annotation_arg" "$start_cwd")
+outdir=$(resolve_path "$outdir_arg" "$start_cwd")
+
+[ -s "$bams_path" ] || fail "--bams not found or empty: $bams_path"
+[ -s "$annotation_path" ] || fail "--annotation not found or empty: $annotation_path"
+[ "$outdir" = "/" ] && fail "--outdir cannot be /"
+[ "$outdir" = "$start_cwd" ] && fail "--outdir cannot be the current working directory"
+
+if [ -e "$outdir" ]; then
+    if is_true "$force_arg"; then
+        [ -d "$outdir" ] || fail "--outdir exists and is not a directory: $outdir"
+        rm -rf "$outdir/00_inputs" "$outdir/01_logs" "$outdir/02_intermediate" "$outdir/03_results" "$outdir/04_reports" "$outdir/run.manifest.json"
+    else
+        fail "--outdir already exists: $outdir (use --force to replace rnaseq-count-flow outputs)"
+    fi
+fi
+
+inputs_dir="$outdir/00_inputs"
+logs_dir="$outdir/01_logs"
+logs_steps_dir="$logs_dir/steps"
+intermediate_dir="$outdir/02_intermediate"
+featurecounts_tmp_dir="$intermediate_dir/featurecounts_tmp"
+results_dir="$outdir/03_results"
+featurecounts_dir="$results_dir/featurecounts"
+matrices_dir="$results_dir/matrices"
+reports_dir="$outdir/04_reports"
+
+mkdir -p "$inputs_dir" "$logs_steps_dir" "$featurecounts_tmp_dir" "$featurecounts_dir" "$matrices_dir" "$reports_dir"
+
+flow_log="$logs_dir/flow.log"
+local_bams_tmp="$intermediate_dir/bam_files.normalized.tmp"
+local_bams="$inputs_dir/bam_files.tsv"
+input_files_file="$inputs_dir/input_files.tsv"
+local_annotation="$inputs_dir/genes.gtf"
+featurecounts_annotation="$intermediate_dir/featurecounts_annotation.gtf"
+featurecounts_annotation_stats="$intermediate_dir/featurecounts_annotation_stats.tsv"
+commands_file="$reports_dir/commands.sh"
+versions_file="$reports_dir/versions.tsv"
+methods_file="$reports_dir/methods.txt"
+flow_summary_file="$reports_dir/flow_summary.tsv"
+count_summary_file="$reports_dir/count_summary.tsv"
+manifest_file="$outdir/run.manifest.json"
+featurecounts_out="$featurecounts_dir/featureCounts.txt"
+featurecounts_summary="$featurecounts_out.summary"
+gene_counts_file="$matrices_dir/gene_counts.tsv"
+assignment_summary_file="$results_dir/assignment_summary.tsv"
+
+: > "$flow_log"
+{
+    printf '#!/bin/sh\n'
+    printf 'set -eu\n\n'
+    printf '# Generated by %s %s at %s\n' "$FLOW_NAME" "$FLOW_VERSION" "$started_at"
+    printf '# Re-run from a shell with the same input paths and TAFFISH dependency commands in PATH.\n\n'
+    printf 'cp %s %s\n' "$(sq "$annotation_path")" "$(sq "$local_annotation")"
+    printf '# 01_validate_inputs prepares %s for featureCounts from the local annotation copy.\n' "$(sq "$featurecounts_annotation")"
+} > "$commands_file"
+chmod +x "$commands_file"
+
+{
+    printf 'tool\tversion\tsource\n'
+    printf 'rnaseq-count-flow\t%s\ttaffish flow\n' "$FLOW_VERSION"
+    printf 'taf-subread\t2.1.1-r2\ttaffish dependency\n'
+    printf 'taf-samtools\t1.23.1-r1\ttaffish dependency\n'
+    printf 'taf-multiqc\t1.35-r2\ttaffish dependency\n'
+} > "$versions_file"
+
+log "begin $FLOW_NAME $FLOW_VERSION"
+
+log "START 01_validate_inputs"
+if {
+    bams_dir=$(CDPATH= cd "$(dirname "$bams_path")" && pwd)
+
+    cp "$annotation_path" "$local_annotation"
+    [ -s "$local_annotation" ] || {
+        printf 'ERROR: copied annotation is empty: %s\n' "$local_annotation"
+        exit 2
+    }
+
+    {
+        printf 'role\toriginal_path\tlocal_path\n'
+        printf 'bams\t%s\t%s\n' "$bams_path" "$local_bams"
+        printf 'annotation\t%s\t%s\n' "$annotation_path" "$local_annotation"
+        printf 'featurecounts_annotation\t%s\t%s\n' "$local_annotation" "$featurecounts_annotation"
+    } > "$input_files_file"
+
+    awk -F '\t' -v OFS='\t' -v target_type="$feature_type" -v attr="$attribute" -v stats="$featurecounts_annotation_stats" '
+        function get_attr(s, key,    pat, val) {
+            pat = key "[ \t]+\"[^\"]+\""
+            if (match(s, pat)) {
+                val = substr(s, RSTART, RLENGTH)
+                sub(/^[^\"]*\"/, "", val)
+                sub(/\"$/, "", val)
+                return val
+            }
+            return ""
+        }
+        FNR == NR {
+            if ($0 !~ /^#/ && NF >= 9 && $3 == "transcript") {
+                transcript_id = get_attr($9, "transcript_id")
+                attr_value = get_attr($9, attr)
+                if (transcript_id != "" && attr_value != "") tx_attr[transcript_id] = attr_value
+            }
+            next
+        }
+        /^#/ {
+            print
+            next
+        }
+        NF >= 9 && $3 == target_type {
+            feature_rows++
+            attr_value = get_attr($9, attr)
+            if (attr_value == "") {
+                transcript_id = get_attr($9, "transcript_id")
+                fill_value = ""
+                if (transcript_id in tx_attr) {
+                    fill_value = tx_attr[transcript_id]
+                } else if (transcript_id != "") {
+                    fill_value = transcript_id
+                }
+                if (fill_value == "") {
+                    missing++
+                } else {
+                    sub(/[ \t;]*$/, "", $9)
+                    $9 = $9 "; " attr " \"" fill_value "\";"
+                    filled++
+                }
+            }
+        }
+        {
+            print
+        }
+        END {
+            print "metric", "value" > stats
+            print "target_feature_type", target_type > stats
+            print "target_attribute", attr > stats
+            print "feature_rows", feature_rows + 0 > stats
+            print "filled_missing_attribute", filled + 0 > stats
+            print "unfilled_missing_attribute", missing + 0 > stats
+            if (feature_rows == 0) {
+                print "ERROR: annotation has no rows with feature type: " target_type > "/dev/stderr"
+                exit 2
+            }
+            if (missing > 0) {
+                print "ERROR: annotation has " missing " " target_type " rows without " attr " or transcript_id" > "/dev/stderr"
+                exit 2
+            }
+        }
+    ' "$local_annotation" "$local_annotation" > "$featurecounts_annotation"
+    [ -s "$featurecounts_annotation" ] || {
+        printf 'ERROR: featureCounts annotation copy is empty: %s\n' "$featurecounts_annotation"
+        exit 2
+    }
+
+    awk -F '\t' -v OFS='\t' -v base="$bams_dir" -v out="$local_bams_tmp" '
+        function trim(x) {
+            gsub(/^[ \t\r]+/, "", x)
+            gsub(/[ \t\r]+$/, "", x)
+            return x
+        }
+        function abs_path(p) {
+            p = trim(p)
+            if (p == "" || p == ".") return "."
+            if (p ~ /^\//) return p
+            return base "/" p
+        }
+        function die(msg) {
+            print "ERROR: bam_files.tsv: " msg > "/dev/stderr"
+            exit 2
+        }
+        BEGIN {
+            print "sample_id", "bam", "bai", "condition", "strandedness" > out
+        }
+        NR == 1 {
+            for (i = 1; i <= NF; i++) col[$i] = i
+            if (!("sample_id" in col)) die("missing sample_id column")
+            if (!("bam" in col)) die("missing bam column")
+            has_bai = ("bai" in col)
+            has_condition = ("condition" in col)
+            has_strandedness = ("strandedness" in col)
+            next
+        }
+        /^[ \t\r]*$/ { next }
+        {
+            sid = trim($(col["sample_id"]))
+            if (sid == "") die("empty sample_id on line " NR)
+            if (sid !~ /^[A-Za-z0-9_.-]+$/) die("unsafe sample_id on line " NR ": " sid)
+            if (seen[sid]++) die("duplicate sample_id: " sid)
+            bam = abs_path($(col["bam"]))
+            if (bam == ".") die("empty bam path for " sid)
+            bai = "."
+            if (has_bai) bai = abs_path($(col["bai"]))
+            condition = "."
+            if (has_condition && trim($(col["condition"])) != "") condition = trim($(col["condition"]))
+            strandedness = "."
+            if (has_strandedness && trim($(col["strandedness"])) != "") strandedness = trim($(col["strandedness"]))
+            print sid, bam, bai, condition, strandedness > out
+            count++
+        }
+        END {
+            if (count == 0) die("contains no samples")
+            print count + 0
+        }
+    ' "$bams_path" > "$intermediate_dir/sample_count.txt"
+
+    sample_count=$(cat "$intermediate_dir/sample_count.txt")
+    printf 'sample_id\tbam\tbai\tcondition\tstrandedness\n' > "$local_bams"
+    line_no=0
+    while IFS="$(printf '\t')" read -r sid bam bai condition strandedness || [ -n "$sid" ]; do
+        line_no=$((line_no + 1))
+        [ "$line_no" -eq 1 ] && continue
+        valid_sample_id "$sid" || {
+            printf 'ERROR: unsafe sample_id: %s\n' "$sid"
+            exit 2
+        }
+        [ -s "$bam" ] || {
+            printf 'ERROR: BAM for %s not found or empty: %s\n' "$sid" "$bam"
+            exit 2
+        }
+        if [ "$bai" = "." ] && [ -s "$bam.bai" ]; then
+            bai="$bam.bai"
+        fi
+        if [ "$bai" != "." ] && [ ! -s "$bai" ]; then
+            printf 'ERROR: BAI for %s not found or empty: %s\n' "$sid" "$bai"
+            exit 2
+        fi
+        quickcheck_cmd="taf-samtools-v1.23.1-r1 samtools quickcheck $(sq "$bam")"
+        record_command "01_validate_bam $sid" "$quickcheck_cmd"
+        printf '\n# command: %s\n' "$quickcheck_cmd"
+        [[taf: taf-samtools-v1.23.1-r1 samtools quickcheck '"$bam"' ]] </dev/null || {
+            printf 'ERROR: samtools quickcheck failed for %s: %s\n' "$sid" "$bam"
+            exit 2
+        }
+        printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$bam" "$bai" "$condition" "$strandedness" >> "$local_bams"
+    done < "$local_bams_tmp"
+
+    printf 'sample_count\t%s\n' "$sample_count"
+    printf 'annotation\t%s\n' "$local_annotation"
+    printf 'strand\t%s\n' "$strand"
+    printf 'paired\t%s\n' "$paired_flag"
+    printf 'feature_type\t%s\n' "$feature_type"
+    printf 'attribute\t%s\n' "$attribute"
+    printf 'min_mapq\t%s\n' "$min_mapq"
+    cat "$featurecounts_annotation_stats"
+} > "$logs_steps_dir/01_validate_inputs.log" 2>&1; then
+    sample_count=$(cat "$intermediate_dir/sample_count.txt")
+    log "DONE  01_validate_inputs"
+else
+    log "FAIL  01_validate_inputs; see $logs_steps_dir/01_validate_inputs.log"
+    exit 1
+fi
+
+bam_args=""
+line_no=0
+while IFS="$(printf '\t')" read -r sid bam bai condition strandedness || [ -n "$sid" ]; do
+    line_no=$((line_no + 1))
+    [ "$line_no" -eq 1 ] && continue
+    bam_args="$bam_args $(sq "$bam")"
+done < "$local_bams"
+[ -n "$bam_args" ] || fail "no BAM files found after validation"
+
+paired_args=""
+if [ "$paired_flag" = true ]; then
+    paired_args=" -p --countReadPairs"
+fi
+
+mapq_args=""
+if [ "$min_mapq" -gt 0 ]; then
+    mapq_args=" -Q $(sq "$min_mapq")"
+fi
+
+featurecounts_cmd="taf-subread-v2.1.1-r2 featureCounts -T $(sq "$threads") -s $(sq "$strand") -t $(sq "$feature_type") -g $(sq "$attribute")$paired_args$mapq_args --tmpDir $(sq "$featurecounts_tmp_dir") -a $(sq "$featurecounts_annotation") -o $(sq "$featurecounts_out")$bam_args"
+featurecounts_script="$intermediate_dir/featurecounts.sh"
+step_name="02_featurecounts"
+step_log="$logs_steps_dir/${step_name}.log"
+record_command "$step_name" "$featurecounts_cmd"
+{
+    printf '#!/bin/sh\n'
+    printf 'set -eu\n'
+    printf 'featureCounts -T %s -s %s -t %s -g %s%s%s --tmpDir %s -a %s -o %s%s\n' \
+        "$(sq "$threads")" \
+        "$(sq "$strand")" \
+        "$(sq "$feature_type")" \
+        "$(sq "$attribute")" \
+        "$paired_args" \
+        "$mapq_args" \
+        "$(sq "$featurecounts_tmp_dir")" \
+        "$(sq "$featurecounts_annotation")" \
+        "$(sq "$featurecounts_out")" \
+        "$bam_args"
+} > "$featurecounts_script"
+chmod +x "$featurecounts_script"
+log "START $step_name"
+if {
+    printf '# step: %s\n' "$step_name"
+    printf '# command: %s\n' "$featurecounts_cmd"
+    [[taf: taf-subread-v2.1.1-r2 sh '"$featurecounts_script"' ]] </dev/null
+} > "$step_log" 2>&1; then
+    log "DONE  $step_name"
+else
+    status=$?
+    log "FAIL  $step_name; see $step_log"
+    exit "$status"
+fi
+
+[ -s "$featurecounts_out" ] || fail "featureCounts output is missing: $featurecounts_out"
+[ -s "$featurecounts_summary" ] || fail "featureCounts summary is missing: $featurecounts_summary"
+
+log "START 03_summarize_counts"
+if {
+    sample_names=$(awk -F '\t' 'NR > 1 { printf "%s%s", sep, $1; sep = "\t" }' "$local_bams")
+    awk -F '\t' -v OFS='\t' -v samples="$sample_names" '
+        BEGIN {
+            n = split(samples, sample, "\t")
+            if (n < 1) {
+                print "ERROR: no samples supplied" > "/dev/stderr"
+                exit 2
+            }
+            printf "gene_id"
+            for (i = 1; i <= n; i++) printf OFS sample[i]
+            printf "\n"
+        }
+        /^#/ { next }
+        $1 == "Geneid" { next }
+        NF > 0 {
+            if (NF != n + 6) {
+                print "ERROR: featureCounts column count does not match sample count on gene " $1 > "/dev/stderr"
+                exit 2
+            }
+            printf "%s", $1
+            for (i = 7; i <= NF; i++) printf OFS $i
+            printf "\n"
+            genes++
+        }
+        END {
+            if (genes == 0) {
+                print "ERROR: featureCounts output has no gene rows" > "/dev/stderr"
+                exit 2
+            }
+        }
+    ' "$featurecounts_out" > "$gene_counts_file"
+
+    awk -F '\t' -v OFS='\t' -v samples="$sample_names" '
+        BEGIN {
+            n = split(samples, sample, "\t")
+            print "status", "sample_id", "count"
+        }
+        /^#/ { next }
+        $1 == "Status" { next }
+        NF > 0 {
+            if (NF != n + 1) {
+                print "ERROR: featureCounts summary column count does not match sample count on status " $1 > "/dev/stderr"
+                exit 2
+            }
+            for (i = 2; i <= NF; i++) print $1, sample[i - 1], $i
+        }
+    ' "$featurecounts_summary" > "$assignment_summary_file"
+
+    gene_count=$(awk 'NR > 1 { c++ } END { print c + 0 }' "$gene_counts_file")
+    assigned_reads=$(awk -F '\t' '$1 == "Assigned" { s += $3 } END { print s + 0 }' "$assignment_summary_file")
+    [ "$gene_count" -gt 0 ] || {
+        printf 'ERROR: gene count matrix has no gene rows\n'
+        exit 2
+    }
+    if [ "$assigned_reads" -lt "$min_assigned_reads" ]; then
+        printf 'ERROR: assigned reads %s below --min-assigned-reads %s\n' "$assigned_reads" "$min_assigned_reads"
+        exit 2
+    fi
+    {
+        printf 'metric\tvalue\n'
+        printf 'sample_count\t%s\n' "$sample_count"
+        printf 'gene_count\t%s\n' "$gene_count"
+        printf 'assigned_reads\t%s\n' "$assigned_reads"
+        printf 'strand\t%s\n' "$strand"
+        printf 'paired\t%s\n' "$paired_flag"
+        printf 'feature_type\t%s\n' "$feature_type"
+        printf 'attribute\t%s\n' "$attribute"
+        printf 'min_mapq\t%s\n' "$min_mapq"
+        awk -F '\t' '$1 == "filled_missing_attribute" { print "filled_missing_attribute\t" $2 }' "$featurecounts_annotation_stats"
+    } > "$count_summary_file"
+    printf '%s\n' "$gene_count" > "$intermediate_dir/gene_count.txt"
+    printf '%s\n' "$assigned_reads" > "$intermediate_dir/assigned_reads.txt"
+    printf 'sample_count\t%s\n' "$sample_count"
+    printf 'gene_count\t%s\n' "$gene_count"
+    printf 'assigned_reads\t%s\n' "$assigned_reads"
+    printf 'gene_counts\t%s\n' "$gene_counts_file"
+    printf 'assignment_summary\t%s\n' "$assignment_summary_file"
+} > "$logs_steps_dir/03_summarize_counts.log" 2>&1; then
+    gene_count=$(cat "$intermediate_dir/gene_count.txt")
+    assigned_reads=$(cat "$intermediate_dir/assigned_reads.txt")
+    log "DONE  03_summarize_counts"
+else
+    log "FAIL  03_summarize_counts; see $logs_steps_dir/03_summarize_counts.log"
+    exit 1
+fi
+
+multiqc_cmd="taf-multiqc-v1.35-r2 multiqc $(sq "$outdir") --outdir $(sq "$reports_dir") --filename multiqc_report.html --data-format json --force --quiet"
+step_name="04_multiqc"
+step_log="$logs_steps_dir/${step_name}.log"
+record_command "$step_name" "$multiqc_cmd"
+log "START $step_name"
+if {
+    printf '# step: %s\n' "$step_name"
+    printf '# command: %s\n' "$multiqc_cmd"
+    [[taf: taf-multiqc-v1.35-r2 multiqc '"$outdir"' --outdir '"$reports_dir"' --filename multiqc_report.html --data-format json --force --quiet ]] </dev/null
+} > "$step_log" 2>&1; then
+    log "DONE  $step_name"
+else
+    status=$?
+    log "FAIL  $step_name; see $step_log"
+    exit "$status"
+fi
+[ -s "$reports_dir/multiqc_report.html" ] || fail "MultiQC report missing: $reports_dir/multiqc_report.html"
+
+{
+    printf 'metric\tvalue\n'
+    printf 'flow\t%s\n' "$FLOW_NAME"
+    printf 'version\t%s\n' "$FLOW_VERSION"
+    printf 'sample_count\t%s\n' "$sample_count"
+    printf 'gene_count\t%s\n' "$gene_count"
+    printf 'assigned_reads\t%s\n' "$assigned_reads"
+    printf 'strand\t%s\n' "$strand"
+    printf 'paired\t%s\n' "$paired_flag"
+    printf 'threads\t%s\n' "$threads"
+    printf 'feature_type\t%s\n' "$feature_type"
+    printf 'attribute\t%s\n' "$attribute"
+    printf 'min_mapq\t%s\n' "$min_mapq"
+    awk -F '\t' '$1 == "filled_missing_attribute" { print "filled_missing_attribute\t" $2 }' "$featurecounts_annotation_stats"
+} > "$flow_summary_file"
+
+{
+    printf 'rnaseq-count-flow %s counted reads from coordinate-sorted BAM files with featureCounts and produced a gene-level count matrix.\n' "$FLOW_VERSION"
+    printf 'The run used strand=%s, paired=%s, feature_type=%s, attribute=%s, and min_mapq=%s. ' "$strand" "$paired_flag" "$feature_type" "$attribute" "$min_mapq"
+    printf 'BAM inputs were validated with samtools quickcheck and were not modified. The featureCounts annotation was prepared as a local copy so missing target attributes could be filled from transcript metadata when needed. '
+    printf 'featureCounts raw output, assignment summaries, the downstream gene_counts.tsv matrix, MultiQC, step logs, commands, versions, methods, and a manifest were written under the output directory.\n'
+} > "$methods_file"
+
+finished_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+{
+    printf '{\n'
+    printf '  "flow": "rnaseq-count-flow",\n'
+    printf '  "version": %s,\n' "$(json_string "$FLOW_VERSION")"
+    printf '  "started_at": %s,\n' "$(json_string "$started_at")"
+    printf '  "finished_at": %s,\n' "$(json_string "$finished_at")"
+    printf '  "inputs": {\n'
+    printf '    "bams": %s,\n' "$(json_string "$bams_path")"
+    printf '    "annotation": %s\n' "$(json_string "$annotation_path")"
+    printf '  },\n'
+    printf '  "parameters": {\n'
+    printf '    "threads": %s,\n' "$threads"
+    printf '    "strand": %s,\n' "$(json_string "$strand")"
+    printf '    "paired": %s,\n' "$paired_flag"
+    printf '    "feature_type": %s,\n' "$(json_string "$feature_type")"
+    printf '    "attribute": %s,\n' "$(json_string "$attribute")"
+    printf '    "min_mapq": %s,\n' "$min_mapq"
+    printf '    "min_assigned_reads": %s\n' "$min_assigned_reads"
+    printf '  },\n'
+    printf '  "dependencies": {\n'
+    printf '    "taf-subread": "2.1.1-r2",\n'
+    printf '    "taf-samtools": "1.23.1-r1",\n'
+    printf '    "taf-multiqc": "1.35-r2"\n'
+    printf '  },\n'
+    printf '  "counts": {\n'
+    printf '    "sample_count": %s,\n' "$sample_count"
+    printf '    "gene_count": %s,\n' "$gene_count"
+    printf '    "assigned_reads": %s\n' "$assigned_reads"
+    printf '  },\n'
+    printf '  "outputs": {\n'
+    printf '    "featurecounts_annotation": %s,\n' "$(json_string "$featurecounts_annotation")"
+    printf '    "featurecounts": %s,\n' "$(json_string "$featurecounts_out")"
+    printf '    "featurecounts_summary": %s,\n' "$(json_string "$featurecounts_summary")"
+    printf '    "gene_counts": %s,\n' "$(json_string "$gene_counts_file")"
+    printf '    "assignment_summary": %s,\n' "$(json_string "$assignment_summary_file")"
+    printf '    "multiqc_report": %s,\n' "$(json_string "$reports_dir/multiqc_report.html")"
+    printf '    "flow_summary": %s\n' "$(json_string "$flow_summary_file")"
+    printf '  }\n'
+    printf '}\n'
+} > "$manifest_file"
+
+log "completed. Counts: $gene_counts_file"
+log "reports: $reports_dir"

@@ -1,0 +1,2 @@
+chr1	smoke	exon	1	50	.	+	.	gene_id "geneA"; transcript_id "txA";
+chr1	smoke	exon	101	150	.	+	.	gene_id "geneB"; transcript_id "txB";
