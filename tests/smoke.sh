@@ -73,7 +73,7 @@ taf check
 echo "[SMOKE] taf build"
 taf build
 
-flow_cmd="$project_dir/target/taf-rnaseq-count-flow-v0.1.0-r1"
+flow_cmd="$project_dir/target/taf-rnaseq-count-flow-v0.2.0-r1"
 if [ ! -x "$flow_cmd" ]; then
     echo "smoke: built flow command is missing or not executable: $flow_cmd" >&2
     exit 1
@@ -98,7 +98,7 @@ echo "[SMOKE] build upstream rnaseq-index-flow"
     taf check
     taf build
 )
-index_flow_cmd="$index_flow_dir/target/taf-rnaseq-index-flow-v0.1.0-r1"
+index_flow_cmd="$index_flow_dir/target/taf-rnaseq-index-flow-v0.2.0-r1"
 if [ ! -x "$index_flow_cmd" ]; then
     echo "smoke: built index flow command is missing or not executable: $index_flow_cmd" >&2
     exit 1
@@ -110,7 +110,7 @@ echo "[SMOKE] build upstream rnaseq-alignment-flow"
     taf check
     taf build
 )
-alignment_flow_cmd="$alignment_flow_dir/target/taf-rnaseq-alignment-flow-v0.1.0-r1"
+alignment_flow_cmd="$alignment_flow_dir/target/taf-rnaseq-alignment-flow-v0.2.0-r1"
 if [ ! -x "$alignment_flow_cmd" ]; then
     echo "smoke: built alignment flow command is missing or not executable: $alignment_flow_cmd" >&2
     exit 1
@@ -152,7 +152,8 @@ echo "[SMOKE] rnaseq-count-flow tiny fixture"
         --outdir count-out \
         --threads 1 \
         --strand 0 \
-        --min-assigned-reads 1
+        --min-assigned-reads 1 \
+        @multiqc-step: --quiet @:
 )
 cd "$project_dir"
 
@@ -187,6 +188,7 @@ awk -F '\t' '$1 == "geneTiny" { found = 1; if ($2 < 1) exit 2 } END { exit !foun
 awk -F '\t' '$1 == "Assigned" { total += $3 } END { exit !(total >= 1) }' "$out/03_results/assignment_summary.tsv"
 grep -F 'taf-subread-v2.1.1-r2' "$out/04_reports/commands.sh" >/dev/null
 grep -F 'taf-multiqc-v1.35-r2' "$out/04_reports/commands.sh" >/dev/null
+grep -F -- '--quiet --quiet' "$out/04_reports/commands.sh" >/dev/null
 grep -F 'taf-subread	2.1.1-r2' "$out/04_reports/versions.tsv" >/dev/null
 grep -F 'sample_count	1' "$out/04_reports/flow_summary.tsv" >/dev/null
 awk -F '\t' '$1 == "assigned_reads" && $2 >= 1 { found = 1 } END { exit !found }' "$out/04_reports/flow_summary.tsv"

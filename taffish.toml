@@ -1,7 +1,7 @@
 [package]
 name = "rnaseq-count-flow"
 kind = "flow"
-version = "0.1.0"
+version = "0.2.0"
 release = 1
 license = "Apache-2.0"
 main = "src/main.taf"
@@ -26,7 +26,7 @@ description = "TAFFISH RNA-seq count flow for generating featureCounts gene-leve
 name = "rnaseq-count-flow"
 type = "taffish-flow"
 homepage = "https://github.com/taffish/rnaseq-count-flow"
-version = "0.1.0"
+version = "0.2.0"
 license = "Apache-2.0"
 description = "TAFFISH-maintained RNA-seq BAM-to-gene-count flow composed from version-pinned TAFFISH tool apps."
 

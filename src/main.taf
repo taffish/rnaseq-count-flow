@@ -14,13 +14,16 @@ ARGS
   0
 <(--min-assigned-reads)min-assigned-reads>
   0
+<(@:)samtools-quickcheck-step>
+<(@:)featurecounts-step>
+<(@:)multiqc-step>
 
 RUN
 <taffish>
 set -eu
 
 FLOW_NAME="rnaseq-count-flow"
-FLOW_VERSION="0.1.0-r1"
+FLOW_VERSION="0.2.0-r1"
 
 bams_arg="::!(--bams)bams::"
 annotation_arg="::!(--annotation)annotation::"
@@ -380,10 +383,10 @@ if {
             printf 'ERROR: BAI for %s not found or empty: %s\n' "$sid" "$bai"
             exit 2
         fi
-        quickcheck_cmd="taf-samtools-v1.23.1-r1 samtools quickcheck $(sq "$bam")"
+        quickcheck_cmd="taf-samtools-v1.23.1-r1 samtools quickcheck ::(@:)samtools-quickcheck-step:: $(sq "$bam")"
         record_command "01_validate_bam $sid" "$quickcheck_cmd"
         printf '\n# command: %s\n' "$quickcheck_cmd"
-        [[taf: taf-samtools-v1.23.1-r1 samtools quickcheck '"$bam"' ]] </dev/null || {
+        [[taf: taf-samtools-v1.23.1-r1 samtools quickcheck ::(@:)samtools-quickcheck-step:: '"$bam"' ]] </dev/null || {
             printf 'ERROR: samtools quickcheck failed for %s: %s\n' "$sid" "$bam"
             exit 2
         }
@@ -425,7 +428,7 @@ if [ "$min_mapq" -gt 0 ]; then
     mapq_args=" -Q $(sq "$min_mapq")"
 fi
 
-featurecounts_cmd="taf-subread-v2.1.1-r2 featureCounts -T $(sq "$threads") -s $(sq "$strand") -t $(sq "$feature_type") -g $(sq "$attribute")$paired_args$mapq_args --tmpDir $(sq "$featurecounts_tmp_dir") -a $(sq "$featurecounts_annotation") -o $(sq "$featurecounts_out")$bam_args"
+featurecounts_cmd="taf-subread-v2.1.1-r2 featureCounts -T $(sq "$threads") -s $(sq "$strand") -t $(sq "$feature_type") -g $(sq "$attribute")$paired_args$mapq_args --tmpDir $(sq "$featurecounts_tmp_dir") -a $(sq "$featurecounts_annotation") -o $(sq "$featurecounts_out") ::(@:)featurecounts-step::$bam_args"
 featurecounts_script="$intermediate_dir/featurecounts.sh"
 step_name="02_featurecounts"
 step_log="$logs_steps_dir/${step_name}.log"
@@ -433,7 +436,7 @@ record_command "$step_name" "$featurecounts_cmd"
 {
     printf '#!/bin/sh\n'
     printf 'set -eu\n'
-    printf 'featureCounts -T %s -s %s -t %s -g %s%s%s --tmpDir %s -a %s -o %s%s\n' \
+    printf 'featureCounts -T %s -s %s -t %s -g %s%s%s --tmpDir %s -a %s -o %s "$@"%s\n' \
         "$(sq "$threads")" \
         "$(sq "$strand")" \
         "$(sq "$feature_type")" \
@@ -450,7 +453,7 @@ log "START $step_name"
 if {
     printf '# step: %s\n' "$step_name"
     printf '# command: %s\n' "$featurecounts_cmd"
-    [[taf: taf-subread-v2.1.1-r2 sh '"$featurecounts_script"' ]] </dev/null
+    [[taf: taf-subread-v2.1.1-r2 sh '"$featurecounts_script"' ::(@:)featurecounts-step:: ]] </dev/null
 } > "$step_log" 2>&1; then
     log "DONE  $step_name"
 else
@@ -550,7 +553,7 @@ else
     exit 1
 fi
 
-multiqc_cmd="taf-multiqc-v1.35-r2 multiqc $(sq "$outdir") --outdir $(sq "$reports_dir") --filename multiqc_report.html --data-format json --force --quiet"
+multiqc_cmd="taf-multiqc-v1.35-r2 multiqc $(sq "$outdir") --outdir $(sq "$reports_dir") --filename multiqc_report.html --data-format json --force --quiet ::(@:)multiqc-step::"
 step_name="04_multiqc"
 step_log="$logs_steps_dir/${step_name}.log"
 record_command "$step_name" "$multiqc_cmd"
@@ -558,7 +561,7 @@ log "START $step_name"
 if {
     printf '# step: %s\n' "$step_name"
     printf '# command: %s\n' "$multiqc_cmd"
-    [[taf: taf-multiqc-v1.35-r2 multiqc '"$outdir"' --outdir '"$reports_dir"' --filename multiqc_report.html --data-format json --force --quiet ]] </dev/null
+    [[taf: taf-multiqc-v1.35-r2 multiqc '"$outdir"' --outdir '"$reports_dir"' --filename multiqc_report.html --data-format json --force --quiet ::(@:)multiqc-step:: ]] </dev/null
 } > "$step_log" 2>&1; then
     log "DONE  $step_name"
 else

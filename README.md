@@ -12,10 +12,11 @@ Package identity:
 - name: `rnaseq-count-flow`
 - command: `taf-rnaseq-count-flow`
 - kind: `flow`
-- version: `0.1.0-r1`
+- version: `0.2.0-r1`
 - license: Apache-2.0
+- repository: https://github.com/taffish/rnaseq-count-flow
 
-## RNA-seq Flow Position
+## Flow Position
 
 This app is a reusable subflow in the TAFFISH bulk RNA-seq flow family. It can
 be run directly from compatible coordinate-sorted BAM files and gene annotation,
@@ -57,6 +58,37 @@ The flow depends on exact TAFFISH tool versions:
 The script also uses ordinary shell utilities such as `awk`, `sed`, `sort`,
 `mkdir`, `cp`, `rm`, `date`, and `wc` for validation and bookkeeping. It does
 not call host-installed Subread, SAMtools, or MultiQC.
+
+## Input Formats
+
+Minimum:
+
+```text
+sample_id	bam
+S1	align-out/03_results/bam/S1.sorted.bam
+S2	align-out/03_results/bam/S2.sorted.bam
+```
+
+With indexes and metadata:
+
+```text
+sample_id	bam	bai	condition	strandedness
+S1	bam/S1.sorted.bam	bam/S1.sorted.bam.bai	control	unstranded
+S2	bam/S2.sorted.bam	bam/S2.sorted.bam.bai	treated	unstranded
+```
+
+Rules:
+
+- `sample_id` must be unique and contain only letters, digits, dot, underscore,
+  or dash.
+- `bam` is required and must point to a readable BAM file.
+- Relative BAM and BAI paths are resolved relative to the BAM table location.
+- `bai` is optional. If omitted, the flow accepts an existing `$bam.bai`.
+- BAM files are validated with `samtools quickcheck` and are not modified.
+- `condition`, `batch`, and `strandedness` columns are accepted for continuity
+  with upstream metadata, but counting parameters are controlled explicitly by
+  flow arguments.
+
 
 ## Usage
 
@@ -120,37 +152,28 @@ Common:
 - `--force`: replace the standard rnaseq-count-flow outputs in an existing
   output directory.
 
-## BAM Table
+## Advanced Per-Step Passthrough
 
-Minimum:
+Most users should rely on the stable parameters above. `0.2.0-r1` also exposes
+optional `@step:` slots for native tool parameters that are not modeled by the
+flow. They default to empty and only affect the named call site when explicitly
+supplied:
 
-```text
-sample_id	bam
-S1	align-out/03_results/bam/S1.sorted.bam
-S2	align-out/03_results/bam/S2.sorted.bam
+```sh
+taf-rnaseq-count-flow ... @featurecounts-step: -Q 20 @:
 ```
 
-With indexes and metadata:
+The general syntax is documented in the
+[TAFFISH Flow Developer Guide (English)](https://github.com/taffish/taffish-docs/blob/main/en/taf-flow-developer-guide.en.md)
+and [TAFFISH Flow 开发者指南（中文）](https://github.com/taffish/taffish-docs/blob/main/zh/taf-flow-developer-guide.cn.md).
 
-```text
-sample_id	bam	bai	condition	strandedness
-S1	bam/S1.sorted.bam	bam/S1.sorted.bam.bai	control	unstranded
-S2	bam/S2.sorted.bam	bam/S2.sorted.bam.bai	treated	unstranded
-```
+| Slot | Native call site |
+| --- | --- |
+| `@samtools-quickcheck-step: ... @:` | `samtools quickcheck` for input BAM |
+| `@featurecounts-step: ... @:` | `featureCounts` read counting |
+| `@multiqc-step: ... @:` | MultiQC report generation |
 
-Rules:
-
-- `sample_id` must be unique and contain only letters, digits, dot, underscore,
-  or dash.
-- `bam` is required and must point to a readable BAM file.
-- Relative BAM and BAI paths are resolved relative to the BAM table location.
-- `bai` is optional. If omitted, the flow accepts an existing `$bam.bai`.
-- BAM files are validated with `samtools quickcheck` and are not modified.
-- `condition`, `batch`, and `strandedness` columns are accepted for continuity
-  with upstream metadata, but counting parameters are controlled explicitly by
-  flow arguments.
-
-## Outputs
+## Output Layout
 
 All flow-created outputs are written under `<outdir>/`:
 
@@ -207,7 +230,7 @@ Important files:
 - `run.manifest.json`: inputs, parameters, dependency versions, summary counts,
   and output paths.
 
-## Downstream Connection
+## Data Flow and Contracts
 
 The DE flow can consume the matrix directly:
 
@@ -245,6 +268,8 @@ DESeq2 design or contrasts. Use `rnaseq-alignment-flow` before this step,
 `rnaseq-alignment-qc-flow` for deeper BAM/RNA-seq QC, and `rnaseq-de-flow` for
 statistical testing.
 
+## Testing
+
 Smoke builds two tiny BAM files from SAM fixtures and checks featureCounts,
 MultiQC, provenance, existing-output refusal, `--force`, and output-directory
 cleanliness. Formal testing chains central yeast reference and FASTQ data
@@ -253,3 +278,10 @@ central data tree can be prepared with
 `repos/apps/bio/flows/rna-seq/test-data/yeast/rnaseq-yeast-get-data`; downstream
 formal tests read it via `TAFFISH_RNASEQ_TESTDATA` or the default local
 `test-data/yeast/data/03_results` path.
+
+## License and Citation
+
+TAFFISH app packaging: Apache-2.0.
+
+Upstream tools keep their own license and citation requirements. See the
+dependency app records and upstream projects for details.

@@ -128,7 +128,7 @@ echo "[FORMAL] build rnaseq-index-flow"
     taf build
 )
 
-index_flow_cmd="$index_flow_dir/target/taf-rnaseq-index-flow-v0.1.0-r1"
+index_flow_cmd="$index_flow_dir/target/taf-rnaseq-index-flow-v0.2.0-r1"
 [ -x "$index_flow_cmd" ] || {
     echo "formal: built index flow command is missing or not executable: $index_flow_cmd" >&2
     exit 1
@@ -141,7 +141,7 @@ echo "[FORMAL] build rnaseq-alignment-flow"
     taf build
 )
 
-alignment_flow_cmd="$alignment_flow_dir/target/taf-rnaseq-alignment-flow-v0.1.0-r1"
+alignment_flow_cmd="$alignment_flow_dir/target/taf-rnaseq-alignment-flow-v0.2.0-r1"
 [ -x "$alignment_flow_cmd" ] || {
     echo "formal: built alignment flow command is missing or not executable: $alignment_flow_cmd" >&2
     exit 1
@@ -155,7 +155,7 @@ taf check
 echo "[FORMAL] taf build"
 taf build
 
-flow_cmd="$project_dir/target/taf-rnaseq-count-flow-v0.1.0-r1"
+flow_cmd="$project_dir/target/taf-rnaseq-count-flow-v0.2.0-r1"
 if [ ! -x "$flow_cmd" ]; then
     echo "formal: built count flow command is missing or not executable: $flow_cmd" >&2
     exit 1

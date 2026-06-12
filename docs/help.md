@@ -1,14 +1,9 @@
-rnaseq-count-flow 0.1.0-r1
+rnaseq-count-flow 0.2.0-r1
 
 Purpose:
   Count RNA-seq reads from coordinate-sorted BAM files with featureCounts,
   then create a gene-level count matrix, featureCounts summaries, MultiQC,
   logs, commands, versions, methods, and a manifest under one output directory.
-
-Flow family role:
-  This is a TAFFISH RNA-seq subflow. It can be run directly from compatible
-  BAM inputs, and its gene_counts.tsv matrix is intended for the optional
-  alignment/count branch of future rnaseq-standard-flow orchestration.
 
 Usage:
   taf-rnaseq-count-flow \
@@ -63,41 +58,42 @@ Common options:
       Replace the standard rnaseq-count-flow outputs inside an existing
       output directory.
 
-Output tree:
-  <outdir>/00_inputs/bam_files.tsv
-  <outdir>/00_inputs/genes.gtf
-  <outdir>/00_inputs/input_files.tsv
-  <outdir>/01_logs/flow.log
-  <outdir>/01_logs/steps/01_validate_inputs.log
-  <outdir>/01_logs/steps/02_featurecounts.log
-  <outdir>/01_logs/steps/03_summarize_counts.log
-  <outdir>/01_logs/steps/04_multiqc.log
-  <outdir>/02_intermediate/featurecounts_annotation.gtf
-  <outdir>/02_intermediate/featurecounts_annotation_stats.tsv
-  <outdir>/02_intermediate/featurecounts_tmp/
-  <outdir>/03_results/featurecounts/featureCounts.txt
-  <outdir>/03_results/featurecounts/featureCounts.txt.summary
+Key outputs:
   <outdir>/03_results/matrices/gene_counts.tsv
+      Gene-level count matrix for DE workflows.
+
+  <outdir>/03_results/featurecounts/featureCounts.txt
+      Raw featureCounts table.
+
+  <outdir>/03_results/featurecounts/featureCounts.txt.summary
+      Raw featureCounts assignment summary.
+
   <outdir>/03_results/assignment_summary.tsv
+      Long-form assignment summary.
+
   <outdir>/04_reports/count_summary.tsv
-  <outdir>/04_reports/multiqc_report.html
-  <outdir>/04_reports/commands.sh
-  <outdir>/04_reports/versions.tsv
-  <outdir>/04_reports/methods.txt
-  <outdir>/04_reports/flow_summary.tsv
-  <outdir>/run.manifest.json
+      Compact counting summary.
 
-Downstream:
-  rnaseq-de-flow can use:
-    --counts count-out/03_results/matrices/gene_counts.tsv
+  <outdir>/04_reports/
+      multiqc_report.html, commands.sh, versions.tsv, methods.txt,
+      flow_summary.tsv, and provenance.
 
-  rnaseq-report-flow can collect:
-    --count-out count-out
+Upstream/downstream:
+  Upstream:
+    rnaseq-alignment-flow provides bam_files.tsv.
+    rnaseq-index-flow provides annotation/genes.gtf.
 
-Dependencies:
-  taf-subread 2.1.1-r2
-  taf-samtools 1.23.1-r1
-  taf-multiqc 1.35-r2
+  Downstream:
+    rnaseq-de-flow can use gene_counts.tsv.
+    rnaseq-report-flow can collect the count output directory.
+
+Advanced step passthrough:
+  Optional expert slots for native tool parameters. They default to empty
+  and are not needed for normal use.
+
+  @samtools-quickcheck-step: ... @: samtools quickcheck for input BAM.
+  @featurecounts-step: ... @: featureCounts read counting.
+  @multiqc-step: ... @: MultiQC report generation.
 
 Boundaries:
   r1 does not align reads, build indexes, run RSeQC or Qualimap, run DESeq2,
@@ -105,6 +101,9 @@ Boundaries:
   and records the chosen featureCounts parameters for downstream review.
   It may normalize a local annotation copy for featureCounts, but it does not
   modify the input annotation.
+
+Detailed documentation:
+  https://github.com/taffish/rnaseq-count-flow
 
 Wrapper options:
   -h, --help       Show this help.
